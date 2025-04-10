@@ -1,16 +1,19 @@
-import simfin as sf
-from config import SIMFIN_API_KEY
-import warnings
-from src.data_analysis import calculate_financial_ratios
+# tests/test_simfin.py
+import pytest
+import pandas as pd
+from src.data_fetcher import DataFetcher
+from src.data_analysis import FinancialAnalyzer
 
-warnings.simplefilter(action='ignore', category=FutureWarning)
+def test_data_fetcher_income():
+    fetcher = DataFetcher()
+    df = fetcher.get_income_statement("AMZN")
+    assert isinstance(df, pd.DataFrame)
+    assert 'Ticker' in df.index.names
+    assert not df.empty
 
-sf.set_api_key(SIMFIN_API_KEY)
-sf.set_data_dir('../data/simfin_data/')
-
-# We load the income statement for the US market
-df = sf.load_income(variant='annual', market='us')
-
-
-df = calculate_financial_ratios("AAPL")  # למשל AAPL
-print(df)
+def test_financial_analyzer_ratios():
+    analyzer = FinancialAnalyzer("AMZN")
+    df = analyzer.get_financial_ratios()
+    assert 'Gross_Margin' in df.columns
+    assert 'EPS' in df.columns
+    assert 'Volatility (%)' in df.columns

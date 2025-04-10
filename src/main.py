@@ -1,29 +1,41 @@
-# main.py
-from fastapi import FastAPI
-import uvicorn
-import os
-import socket
-import subprocess
-import time
-
-from data_analysis import calculate_financial_ratios
-import base64
+# src/main.py
+from fastapi import FastAPI, HTTPException
+from src.data_analysis import calculate_financial_ratios
 import plotly.express as px
+import base64
+import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="SimFin Analysis API", description="API for financial analysis using SimFin data")
 
 @app.get("/")
 def root():
+    """Root endpoint for a welcome message."""
     return {"message": "Welcome to the SimFin Analysis API"}
 
 @app.get("/analysis/{ticker}")
-def get_analysis(ticker: str):
+def get_analysis(ticker: str, variant: str = "annual"):
     """
-    Get annual income statement analysis for a given ticker.
+    Returns annual financial analysis for a given ticker.
+
+    Args:
+        ticker (str): Stock symbol (e.g., 'AMZN').
+        variant (str, optional): Reporting period ('annual' or 'quarterly').
+
+    Returns:
+        dict: Data and a profit margin chart.
+
+    Raises:
+        HTTPException: If there is an error in the data or calculations.
     """
     try:
-        df_result = calculate_financial_ratios(ticker)
+        logger.info(f"Starting analysis for ticker: {ticker}")
+        df_result = calculate_financial_ratios(ticker, variant=variant)
+        if df_result.empty:
+            raise ValueError(f"No data available for ticker {ticker}")
         data = df_result.to_dict(orient='records')
 
         fig_margin = px.line(
@@ -31,37 +43,24 @@ def get_analysis(ticker: str):
             x='Fiscal Year',
             y=['Gross_Margin', 'Operating_Margin', 'Net_Margin'],
             title=f"Profit Margins for {ticker} by Fiscal Year",
-            labels={'value': 'Margin', 'variable': 'Margin Type'}
+            labels={'value': 'Margin (%)', 'variable': 'Margin Type'}
         )
+        fig_margin.update_layout(title_font_size=20, xaxis_title_font_size=16)
 
         img_bytes = fig_margin.to_image(format="png")
         img_b64 = base64.b64encode(img_bytes).decode("utf-8")
         image_data_uri = f"data:image/png;base64,{img_b64}"
+
+        logger.info(f"Analysis completed for ticker: {ticker}")
         return {"data": data, "image": image_data_uri}
 
+    except ValueError as e:
+        logger.error(f"ValueError: {str(e)}")
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        return {"error": str(e)}
-
-def is_port_in_use(port: int) -> bool:
-    """Check if a port is in use on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('127.0.0.1', port)) == 0
-
-def kill_process_on_port(port: int):
-    """Kill the process that is using the given port (only works on Unix/Mac)."""
-    try:
-        result = subprocess.check_output(
-            f"lsof -ti:{port}", shell=True, stderr=subprocess.DEVNULL
-        ).decode().strip()
-        if result:
-            print(f"Killing process on port {port} (PID: {result})")
-            os.system(f"kill -9 {result}")
-    except Exception as e:
-        print(f"Could not check/kill process on port {port}: {e}")
+        logger.error(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    port = 8000
-    if is_port_in_use(port):
-        kill_process_on_port(port)
-        time.sleep(1)  # wait a moment before trying to bind the port
-    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True)
+    import uvicorn
+    uvicorn.run("src.main:app", host="127.0.0.1", port=8000, reload=True)

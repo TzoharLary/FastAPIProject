@@ -1,148 +1,208 @@
-# Import necessary libraries
+# src/data_analysis.py
 import simfin as sf
 import pandas as pd
-import logging
-from config import SIMFIN_API_KEY, DATA_DIR
+from scipy import stats
+from dotenv import load_dotenv
 import os
+import logging
+from src.data_fetcher import DataFetcher
 
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
-def load_fresh_shareprices(variant='daily', market='us'):
-    filename = f'{market}-shareprices-{variant}.csv'
-    file_path = os.path.join(DATA_DIR, market, filename)
+# Load API key and data path from .env
+load_dotenv()
+SIMFIN_API_KEY = os.getenv("SIMFIN_API_KEY")
+DATA_DIR = os.getenv("DATA_DIR", "data/simfin_data/")
 
-    if os.path.exists(file_path):
-        os.remove(file_path)
-        print(f"✔️ Deleted cached file: {file_path}")
-    else:
-        print(f"⚠️ File not found (nothing to delete): {file_path}")
+class FinancialAnalyzer:
+    """Class for managing data and calculating financial ratios."""
 
-    df = sf.load_shareprices(variant=variant, market=market)
-    print("✅ Share prices loaded fresh from SimFin.")
-    return df
+    def __init__(self, ticker: str, market: str = 'us', variant: str = 'annual'):
+        self.ticker = ticker
+        self.market = market
+        self.variant = variant
+        self.fetcher = DataFetcher()
+        logger.info(f"Initialized FinancialAnalyzer for {ticker}")
 
-# define the function to get the data from SimFin
-def init_simfin():
+    def load_fresh_shareprices(self) -> pd.DataFrame:
+        filename = f'{self.market}-shareprices-daily.csv'
+        file_path = os.path.join(DATA_DIR, self.market, filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"Deleted cached file: {file_path}")
+        return self.fetcher.get_share_prices(self.ticker, variant='daily', market=self.market)
+
+    def get_income_statement(self) -> pd.DataFrame:
+        """
+        Retrieve the income statement for the specified ticker.
+        Args:
+            ticker (str): Stock symbol.
+            market (str): Market.
+            variant (str): Reporting period.
+        Returns:
+            pd.DataFrame: Income statement data.
+        Raises:
+            ValueError: If no data is found for the ticker.
+        """
+        return self.fetcher.get_income_statement(self.ticker, self.market, self.variant)
+
+    def calculate_margins(self, df_income: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate profit margins (Gross, Operating, Net).
+
+        Args:
+            df_income (pd.DataFrame): Income statement data.
+
+        Returns:
+            pd.DataFrame: Table with calculated margins.
+        """
+        df = df_income.copy()
+        df['Gross_Margin'] = (df['Gross Profit'] / df['Revenue']) * 100
+        df['Operating_Margin'] = (df['Operating Income (Loss)'] / df['Revenue']) * 100
+        df['Net_Margin'] = (df['Net Income'] / df['Revenue']) * 100
+        return df
+
+    def calculate_eps_and_pe(self, df_income: pd.DataFrame, share_prices: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate EPS and P/E Ratio.
+
+        Args:
+            df_income (pd.DataFrame): Income statement data.
+            share_prices (pd.DataFrame): Share price data.
+
+        Returns:
+            pd.DataFrame: Table with EPS and P/E values.
+        """
+        sp_ticker = share_prices[share_prices['Ticker'] == self.ticker].copy()
+        if sp_ticker.empty:
+            logger.error(f"Ticker {self.ticker} not found in share prices data.")
+            return df_income
+
+        sp_ticker['Date'] = pd.to_datetime(sp_ticker['Date'])
+        sp_ticker['Year'] = sp_ticker['Date'].dt.year
+        avg_price_by_year = sp_ticker.groupby('Year')['Close'].mean().reset_index()
+        avg_price_by_year.rename(columns={'Year': 'Fiscal Year', 'Close': 'Average_Share_Price'}, inplace=True)
+
+        df_merged = pd.merge(df_income, avg_price_by_year, on='Fiscal Year', how='left')
+        df_merged['EPS'] = df_merged['Net Income'] / df_merged['Shares (Basic)']
+        df_merged['PE Ratio'] = df_merged.apply(
+            lambda row: row['Average_Share_Price'] / row['EPS'] if row['EPS'] else None, axis=1
+        )
+        return df_merged
+
+    def calculate_price_changes(self, df_merged: pd.DataFrame, share_prices: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate stock prices before and after report publication.
+
+        Args:
+            df_merged (pd.DataFrame): Merged table.
+            share_prices (pd.DataFrame): Share price data.
+
+        Returns:
+            pd.DataFrame: Table with before and after prices.
+        """
+        prices = share_prices[share_prices['Ticker'] == self.ticker].set_index('Date')
+
+        def get_before_after_price(date_str):
+            try:
+                date = pd.to_datetime(date_str)
+                before = prices.loc[:date].iloc[-1]['Close']
+                after = prices.loc[date:].iloc[0]['Close']
+                return before, after
+            except:
+                return None, None
+
+        df_merged['Publish Date'] = pd.to_datetime(df_merged['Publish Date'])
+        results = df_merged['Publish Date'].apply(get_before_after_price)
+        df_merged['Price_Before_Report'] = results.apply(lambda x: x[0])
+        df_merged['Price_After_Report'] = results.apply(lambda x: x[1])
+        return df_merged
+
+    def calculate_cagr(self, df_merged: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate CAGR for stock prices.
+
+        Args:
+            df_merged (pd.DataFrame): Merged table.
+
+        Returns:
+            pd.DataFrame: Table with CAGR values.
+        """
+        df_sorted = df_merged.sort_values('Fiscal Year')
+        base_year = df_sorted['Fiscal Year'].min()
+        base_price = df_sorted.loc[df_sorted['Fiscal Year'] == base_year, 'Average_Share_Price'].values[0]
+
+        def compute_cagr(current_price, current_year):
+            if current_year == base_year or not current_price:
+                return 0
+            return (current_price / base_price) ** (1 / (current_year - base_year)) - 1
+
+        df_merged['CAGR'] = df_merged.apply(lambda row: compute_cagr(row['Average_Share_Price'], row['Fiscal Year']),
+                                            axis=1)
+        df_merged['CAGR (%)'] = df_merged['CAGR'] * 100
+        return df_merged
+
+    def calculate_volatility(self, share_prices: pd.DataFrame) -> float:
+        """
+        Calculate annual volatility of stock prices using SciPy.
+
+        Args:
+            share_prices (pd.DataFrame): Share price data.
+
+        Returns:
+            float: Annualized volatility.
+        """
+        sp_ticker = share_prices[share_prices['Ticker'] == self.ticker].copy()
+        sp_ticker['Date'] = pd.to_datetime(sp_ticker['Date'])
+        sp_ticker['Year'] = sp_ticker['Date'].dt.year
+        returns = sp_ticker.groupby('Year').apply(lambda x: x['Close'].pct_change().dropna())
+        volatility_by_year = returns.groupby('Year').apply(stats.tstd) * (252 ** 0.5)
+        return volatility_by_year
+
+    def get_financial_ratios(self) -> pd.DataFrame:
+        """
+        Return a table with all financial ratios.
+
+        Returns:
+            pd.DataFrame: Table of calculated financial data.
+        """
+        income_annual = self.get_income_statement()
+        df_income = income_annual[['Fiscal Year', 'Revenue', 'Cost of Revenue', 'Gross Profit',
+                                   'Operating Expenses', 'Operating Income (Loss)', 'Net Income',
+                                   'Shares (Basic)', 'Publish Date']].dropna(
+            subset=['Revenue', 'Gross Profit', 'Operating Income (Loss)', 'Net Income'])
+
+        df_income = self.calculate_margins(df_income)
+        share_prices = self.load_fresh_shareprices()
+        df_merged = self.calculate_eps_and_pe(df_income, share_prices)
+        df_merged = self.calculate_price_changes(df_merged, share_prices)
+        df_merged = self.calculate_cagr(df_merged)
+        volatility = self.calculate_volatility(share_prices)
+
+        logger.info(f"Volatility calculated for {self.ticker}")
+        df_merged = df_merged.merge(
+            volatility.rename('Volatility').to_frame().reset_index(),
+            left_on='Fiscal Year',
+            right_on='Year',
+            how='left'
+        )
+
+        df_merged['Volatility (%)'] = df_merged['Volatility'] * 100
+        df_merged = df_merged.drop(columns=['Year', 'Volatility'])  # clean up temp columns
+        return df_merged.round(2)
+
+def calculate_financial_ratios(ticker: str, variant: str = 'annual') -> pd.DataFrame:
     """
-        function to initialize SimFin API
+    External interface to calculate financial ratios.
+
+    Args:
+        ticker (str): Stock symbol.
+        variant (str, optional): Reporting period.
+
+    Returns:
+        pd.DataFrame: Table of calculated financial data.
     """
-    sf.set_api_key(SIMFIN_API_KEY)
-    # Possible to set a local directory to avoid re-downloading files
-    sf.set_data_dir(DATA_DIR)
-
-    # share_prices = load_fresh_shareprices(variant='annual', market='us')
-
-def get_income_statement(ticker: str, market: str = 'us', variant: str = 'annual'):
-    """
-        Returns the income statement of a company.
-        ticker - Stock symbol
-        market - Market (usually 'us')
-        variant - 'annual' or 'quarterly'
-    """
-
-    # Load data based on SimFin
-    df_income = sf.load_income(variant=variant, market=market)
-
-    # logger.info("Available columns: %s", df_income.columns)
-    logger.info("Index names: %s", df_income.index.names)
-
-    # Filter the requested company
-    company_data = df_income.loc[df_income.index.get_level_values('Ticker') == ticker]
-
-    return company_data
-
-def get_balance_sheet(ticker: str, market: str = 'us', variant: str = 'annual'):
-    """
-        Returns the balance sheet of a company.
-    """
-    df_balance = sf.load_balance(variant=variant, market=market)
-    return df_balance.loc[df_balance['Ticker'] == ticker]
-
-def get_share_prices(ticker: str, variant='daily'):
-    df = sf.load_shareprices(variant=variant, market='us').reset_index()
-    df = df[df['Ticker'] == ticker].copy()
-    df['Date'] = pd.to_datetime(df['Date'])
-    df['Year'] = df['Date'].dt.year
-    return df
-
-
-def calculate_financial_ratios(ticker: str):
-    """
-    Retrieves and calculates financial ratios for a company, including:
-      - Earnings Per Share (EPS)
-      - Price-to-Earnings Ratio (P/E)
-      - Profit margins (Gross, Operating, Net)
-      - Price before and after the earnings report (based on Publish Date)
-    """
-    init_simfin()
-
-    # --- Income Statement ---
-    income_annual = get_income_statement(ticker, variant='annual')
-    df_income = income_annual[['Fiscal Year', 'Revenue', 'Cost of Revenue', 'Gross Profit',
-                               'Operating Expenses', 'Operating Income (Loss)', 'Net Income',
-                               'Shares (Basic)', 'Publish Date']]
-    df_income = df_income.dropna(subset=['Revenue', 'Gross Profit', 'Operating Income (Loss)', 'Net Income'])
-
-    # --- Profit Margins in Percentage ---
-    df_income['Gross_Margin'] = (df_income['Gross Profit'] / df_income['Revenue']) * 100
-    df_income['Operating_Margin'] = (df_income['Operating Income (Loss)'] / df_income['Revenue']) * 100
-    df_income['Net_Margin'] = (df_income['Net Income'] / df_income['Revenue']) * 100
-
-    # --- Daily Share Price Data ---
-    share_prices_daily = load_fresh_shareprices(variant='daily', market='us').reset_index()
-    sp_ticker = share_prices_daily[share_prices_daily['Ticker'] == ticker].copy()
-    if sp_ticker.empty:
-        logger.error("Ticker %s not found in share prices data.", ticker)
-        return df_income
-
-    sp_ticker['Date'] = pd.to_datetime(sp_ticker['Date'])
-    sp_ticker['Year'] = sp_ticker['Date'].dt.year
-
-    # --- Average Price per Year ---
-    avg_price_by_year = sp_ticker.groupby('Year')['Close'].mean().reset_index()
-    avg_price_by_year.rename(columns={'Year': 'Fiscal Year', 'Close': 'Average_Share_Price'}, inplace=True)
-
-    # --- Merge with Income Statement ---
-    df_merged = pd.merge(df_income, avg_price_by_year, on='Fiscal Year', how='left')
-
-    # --- Calculate EPS and P/E Ratio ---
-    df_merged['EPS'] = df_merged['Net Income'] / df_merged['Shares (Basic)']
-    df_merged['PE Ratio'] = df_merged.apply(
-        lambda row: row['Average_Share_Price'] / row['EPS'] if row['EPS'] else None, axis=1
-    )
-
-    # --- Calculate Share Price Before and After Report Publication ---
-    prices = sp_ticker.set_index('Date')
-
-    def get_before_after_price(date_str):
-        try:
-            date = pd.to_datetime(date_str)
-            before = prices.loc[:date].iloc[-1]['Close']
-            after = prices.loc[date:].iloc[0]['Close']
-            return before, after
-        except:
-            return None, None
-
-    df_merged['Publish Date'] = pd.to_datetime(df_merged['Publish Date'])
-    results = df_merged['Publish Date'].apply(get_before_after_price)
-    df_merged['Price_Before_Report'] = results.apply(lambda x: x[0])
-    df_merged['Price_After_Report'] = results.apply(lambda x: x[1])
-
-    df_sorted = df_merged.sort_values('Fiscal Year')
-    base_year = df_sorted['Fiscal Year'].min()
-    base_price = df_sorted.loc[df_sorted['Fiscal Year'] == base_year, 'Average_Share_Price'].values[0]
-
-    def compute_cagr(current_price, current_year):
-        # אם זו השנה הבסיסית, CAGR הוא 0
-        if current_year == base_year or not current_price:
-            return 0
-        # CAGR = (Current Price / Base Price)^(1/(Year difference)) - 1
-        return (current_price / base_price) ** (1 / (current_year - base_year)) - 1
-
-    df_merged['CAGR'] = df_merged.apply(lambda row: compute_cagr(row['Average_Share_Price'], row['Fiscal Year']),
-                                        axis=1)
-    df_merged['CAGR (%)'] = df_merged['CAGR'] * 100
-
-    return df_merged.round(2)
+    analyzer = FinancialAnalyzer(ticker, variant=variant)
+    return analyzer.get_financial_ratios()
