@@ -13,6 +13,7 @@
     # - scipy: Library for scientific and technical computing.
     # - python-dotenv: Library for loading environment variables from a .env file.
     # - pytest: Testing framework for Python.
+    # - kaleido: Library for static image export of Plotly figures.
 
 
 fastapi==0.115.0
@@ -26,3 +27,4 @@ plotly==5.24.1
 scipy==1.14.1
 python-dotenv==1.0.1
 pytest==8.3.3
+kaleido==0.2.1
