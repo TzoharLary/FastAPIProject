@@ -1,0 +1,28 @@
+# FastAPI project dependencies
+
+# Explanation of the dependencies:
+
+    # - fastapi: The web framework for building APIs.
+    # - uvicorn: ASGI server for running FastAPI applications.
+    # - pandas: Data manipulation and analysis library.
+    # - requests: HTTP library for making requests to external APIs.
+    # - simfin: Library for accessing financial data.
+    # - numpy: Library for numerical computations.
+    # - matplotlib: Library for creating static, animated, and interactive visualizations.
+    # - plotly: Library for creating interactive plots.
+    # - scipy: Library for scientific and technical computing.
+    # - python-dotenv: Library for loading environment variables from a .env file.
+    # - pytest: Testing framework for Python.
+
+
+fastapi==0.115.0
+uvicorn==0.30.6
+pandas==2.2.2
+requests==2.32.3
+simfin==0.8.1
+numpy==1.26.4
+matplotlib==3.9.2
+plotly==5.24.1
+scipy==1.14.1
+python-dotenv==1.0.1
+pytest==8.3.3
