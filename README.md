@@ -195,21 +195,7 @@ The project includes automated tests using Pytest to ensure reliability:
 To run the tests:
 ```bash
 pytest tests/
-
-## Troubleshooting
-1. SimFin API Connection Issues
-   ```bash
-   # Verify API key
-   echo $SIMFIN_API_KEY
-   
-   # Clear cache if needed
-   rm -rf data/simfin_data/*
-   ```
-
-2. Performance Optimization
-   - Enable data caching
-   - Use quarterly variant for faster initial loads
-   - Monitor memory usage with large datasets
+```
 
 ## Troubleshooting
 ### **SimFin API Connection Issues**
